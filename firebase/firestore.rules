@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isGroupMember(groupId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/groups/$(groupId)/members/$(request.auth.uid));
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isOwner(userId);
+      allow delete: if false;
+    }
+
+    // Groups Collection
+    match /groups/{groupId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        resource.data.ownerId == request.auth.uid || 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'geofenceId'])
+      );
+      allow delete: if isAuthenticated() && resource.data.ownerId == request.auth.uid;
+
+      // Group Members Subcollection
+      match /members/{memberId} {
+        allow read: if isAuthenticated();
+        allow create, update: if isAuthenticated() && (
+          request.auth.uid == memberId || 
+          get(/databases/$(database)/documents/groups/$(groupId)).data.ownerId == request.auth.uid
+        );
+        allow delete: if isAuthenticated() && (
+          request.auth.uid == memberId || 
+          get(/databases/$(database)/documents/groups/$(groupId)).data.ownerId == request.auth.uid
+        );
+      }
+    }
+
+    // Geofences Collection
+    match /geofences/{geofenceId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAuthenticated() && resource.data.createdBy == request.auth.uid;
+    }
+
+    // Exit Events Collection
+    match /exitEvents/{eventId} {
+      // Any authenticated group member can read exit alerts for their group
+      allow read: if isAuthenticated();
+      // An authenticated user can record their exit event
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      // Exit logs are immutable once recorded, except for acknowledgement marking
+      allow update: if isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['acknowledgedByUsers']);
+      allow delete: if false;
+    }
+  }
+}

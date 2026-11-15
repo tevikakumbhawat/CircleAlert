@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Gradle
+.gradle/
+build/
+shared/build/
+iosApp/build/
+
+# Xcode
+*.xcuserstate
+project.xcworkspace/
+xcuserdata/
+DerivedData/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Kotlin
+.idea/
+*.iml
+*.ipr
+*.iws
+.konan/
+
+# Local configuration
+local.properties
+GoogleService-Info.plist
+firebase-adminsdk.json
