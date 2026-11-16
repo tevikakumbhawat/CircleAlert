@@ -147,7 +147,7 @@ final class FirebaseService: ObservableObject {
             email: user.email,
             role: .owner,
             joinedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000),
-            geofenceStatus: .inside,
+            geofenceStatus: .unknown,
             lastSeenEpochMs: Int64(Date().timeIntervalSince1970 * 1000),
             pushToken: user.pushToken
         )
@@ -190,7 +190,7 @@ final class FirebaseService: ObservableObject {
             email: user.email,
             role: .member,
             joinedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000),
-            geofenceStatus: .inside,
+            geofenceStatus: targetGroup.geofenceId != nil ? .inside : .unknown,
             lastSeenEpochMs: Int64(Date().timeIntervalSince1970 * 1000),
             pushToken: user.pushToken
         )
@@ -243,6 +243,14 @@ final class FirebaseService: ObservableObject {
             if var grp = self.allGroups[groupId] {
                 grp.geofenceId = geofenceId
                 self.allGroups[groupId] = grp
+            }
+            if var members = self.groupMembersMap[groupId] {
+                for i in 0..<members.count {
+                    if members[i].geofenceStatus == .unknown {
+                        members[i].geofenceStatus = .inside
+                    }
+                }
+                self.groupMembersMap[groupId] = members
             }
             self.refreshUserGroups()
             self.persistDatabase()

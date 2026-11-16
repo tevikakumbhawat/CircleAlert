@@ -217,37 +217,65 @@ struct GroupDetailView: View {
 
                                     Spacer()
 
-                                    StatusPillView(status: member.geofenceStatus)
+                                    StatusPillView(
+                                        status: member.geofenceStatus,
+                                        hasActiveGeofence: viewModel.geofence != nil
+                                    )
                                 }
 
-                                // Simulator action button (DEBUG testing requirement)
-                                HStack {
-                                    Text("Simulate boundary exit:")
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
+                                if viewModel.geofence != nil {
+                                    // Simulator action button (DEBUG testing requirement)
+                                    HStack {
+                                        Text("Simulate boundary exit:")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
 
-                                    Spacer()
+                                        Spacer()
 
-                                    Button(action: {
-                                        Task {
-                                            await viewModel.simulateExit(for: member)
+                                        Button(action: {
+                                            Task {
+                                                await viewModel.simulateExit(for: member)
+                                            }
+                                        }) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "arrow.up.right.circle.fill")
+                                                Text("Trigger Exit")
+                                            }
+                                            .font(.caption)
+                                            .fontWeight(.semibold)
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(Color.orange.opacity(0.15))
+                                            .foregroundColor(.orange)
+                                            .cornerRadius(8)
                                         }
-                                    }) {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "arrow.up.right.circle.fill")
-                                            Text("Trigger Exit")
-                                        }
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 5)
-                                        .background(Color.orange.opacity(0.15))
-                                        .foregroundColor(.orange)
-                                        .cornerRadius(8)
+                                        .disabled(viewModel.isSimulating)
                                     }
-                                    .disabled(viewModel.isSimulating)
+                                    .padding(.top, 2)
+                                } else {
+                                    HStack {
+                                        Image(systemName: "shield.slash")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        Text("Configure perimeter above to enable exit detection")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+
+                                        Spacer()
+
+                                        Button(action: { viewModel.showGeofenceSetup = true }) {
+                                            Text("Set Up Zone")
+                                                .font(.caption)
+                                                .fontWeight(.semibold)
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(Color.blue.opacity(0.12))
+                                                .foregroundColor(.blue)
+                                                .cornerRadius(6)
+                                        }
+                                    }
+                                    .padding(.top, 2)
                                 }
-                                .padding(.top, 2)
                             }
                             .padding(12)
                             .background(Color(uiColor: .tertiarySystemGroupedBackground))
