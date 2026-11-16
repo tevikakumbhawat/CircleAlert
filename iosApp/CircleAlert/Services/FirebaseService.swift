@@ -4,8 +4,7 @@ import CoreLocation
 
 /// Complete Firebase & Backend Service for CircleAlert.
 /// Provides Firebase Authentication, Cloud Firestore real-time synchronization,
-/// and local fallback storage for offline/simulator evaluation when
-/// GoogleService-Info.plist has not yet been connected to a live Google project.
+/// and a persistent multi-user local database engine for offline/simulator evaluation.
 final class FirebaseService: ObservableObject {
     static let shared = FirebaseService()
 
@@ -17,23 +16,32 @@ final class FirebaseService: ObservableObject {
     @Published var exitEventsMap: [String: [GeofenceExitEventModel]] = [:] // key: groupId
     @Published var isFirebaseConfigured: Bool = false
 
-    private let storageKeyPrefix = "CircleAlert_LocalStore_"
+    // MARK: - Internal Shared Database (mimics Cloud Firestore collections)
+    private var allGroups: [String: TrackingGroupModel] = [:] // collection "groups"
+    private var registeredUsers: [String: UserModel] = [:]   // collection "users" (keyed by lowercase email)
+
+    private let storageKeyPrefix = "CircleAlert_LocalStore_v2_"
     private let userDefaults = UserDefaults.standard
 
     init() {
         checkFirebaseConfiguration()
-        loadLocalSession()
-        if currentUser == nil {
-            // Seed a realistic default user for quick demo & testing
-            let demoUser = UserModel(
-                id: "usr_alex_01",
-                email: "alex@circlealert.internal",
-                displayName: "Alex Rivera",
-                pushToken: "apns_sample_token_88291"
-            )
-            currentUser = demoUser
-            seedInitialDemoData(for: demoUser)
+        loadDatabase()
+
+        if allGroups.isEmpty {
+            seedInitialDemoData()
         }
+
+        loadLocalSession()
+
+        if currentUser == nil {
+            // Default to Alex Rivera on fresh app install
+            if let alex = registeredUsers["alex@circlealert.internal"] {
+                currentUser = alex
+                saveLocalSession(user: alex)
+            }
+        }
+
+        refreshUserGroups()
     }
 
     private func checkFirebaseConfiguration() {
@@ -45,7 +53,7 @@ final class FirebaseService: ObservableObject {
             print("CircleAlert: Live Firebase detected for project \(projectId)")
         } else {
             isFirebaseConfigured = false
-            print("CircleAlert: Using mock/local Firestore storage engine (GoogleService-Info.plist placeholder)")
+            print("CircleAlert: Using persistent mock Firestore storage engine (GoogleService-Info.plist placeholder)")
         }
     }
 
@@ -56,15 +64,24 @@ final class FirebaseService: ObservableObject {
             throw NSError(domain: "CircleAlertAuth", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid email or password (min 6 characters required)."])
         }
 
-        let user = UserModel(
-            id: "usr_\(abs(trimmedEmail.hashValue))",
-            email: trimmedEmail,
-            displayName: trimmedEmail.components(separatedBy: "@").first?.capitalized ?? "User"
-        )
+        let user: UserModel
+        if let existing = registeredUsers[trimmedEmail] {
+            user = existing
+        } else {
+            let derivedName = trimmedEmail.components(separatedBy: "@").first?.capitalized ?? "User"
+            user = UserModel(
+                id: "usr_\(abs(trimmedEmail.hashValue))",
+                email: trimmedEmail,
+                displayName: derivedName
+            )
+            registeredUsers[trimmedEmail] = user
+        }
+
         await MainActor.run {
             self.currentUser = user
             self.saveLocalSession(user: user)
-            self.seedInitialDemoData(for: user)
+            self.refreshUserGroups()
+            self.persistDatabase()
         }
         return user
     }
@@ -82,16 +99,20 @@ final class FirebaseService: ObservableObject {
             email: trimmedEmail,
             displayName: trimmedName
         )
+        registeredUsers[trimmedEmail] = user
+
         await MainActor.run {
             self.currentUser = user
             self.saveLocalSession(user: user)
-            self.seedInitialDemoData(for: user)
+            self.refreshUserGroups()
+            self.persistDatabase()
         }
         return user
     }
 
     func signOut() {
         currentUser = nil
+        userGroups = []
         userDefaults.removeObject(forKey: "\(storageKeyPrefix)SessionUser")
     }
 
@@ -132,10 +153,11 @@ final class FirebaseService: ObservableObject {
         )
 
         await MainActor.run {
-            self.userGroups.insert(newGroup, at: 0)
+            self.allGroups[groupId] = newGroup
             self.groupMembersMap[groupId] = [ownerMember]
             self.exitEventsMap[groupId] = []
-            self.persistState()
+            self.refreshUserGroups()
+            self.persistDatabase()
         }
 
         return newGroup
@@ -151,13 +173,11 @@ final class FirebaseService: ObservableObject {
             throw NSError(domain: "CircleAlertGroup", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invite code must be 6 characters."])
         }
 
-        // Search among existing groups or simulated directory
-        guard let targetGroupIndex = userGroups.firstIndex(where: { $0.inviteCode == normalized }) else {
-            // If not found in userGroups, check if we can simulate joining an existing public group
+        // Search the global groups directory across all users
+        guard let targetGroup = allGroups.values.first(where: { $0.inviteCode == normalized }) else {
             throw NSError(domain: "CircleAlertGroup", code: 404, userInfo: [NSLocalizedDescriptionKey: "Group with invite code '\(normalized)' was not found."])
         }
 
-        let targetGroup = userGroups[targetGroupIndex]
         var members = groupMembersMap[targetGroup.id] ?? []
 
         if members.contains(where: { $0.userId == user.id }) {
@@ -177,12 +197,13 @@ final class FirebaseService: ObservableObject {
         members.append(newMember)
 
         var updatedGroup = targetGroup
-        updatedGroup.memberCount += 1
+        updatedGroup.memberCount = members.count
 
         await MainActor.run {
-            self.userGroups[targetGroupIndex] = updatedGroup
+            self.allGroups[targetGroup.id] = updatedGroup
             self.groupMembersMap[targetGroup.id] = members
-            self.persistState()
+            self.refreshUserGroups()
+            self.persistDatabase()
         }
 
         return updatedGroup
@@ -219,10 +240,12 @@ final class FirebaseService: ObservableObject {
 
         await MainActor.run {
             self.activeGeofences[groupId] = config
-            if let idx = self.userGroups.firstIndex(where: { $0.id == groupId }) {
-                self.userGroups[idx].geofenceId = geofenceId
+            if var grp = self.allGroups[groupId] {
+                grp.geofenceId = geofenceId
+                self.allGroups[groupId] = grp
             }
-            self.persistState()
+            self.refreshUserGroups()
+            self.persistDatabase()
         }
 
         return config
@@ -236,7 +259,7 @@ final class FirebaseService: ObservableObject {
         exitLongitude: Double,
         isSimulated: Bool
     ) async throws -> GeofenceExitEventModel {
-        guard let group = userGroups.first(where: { $0.id == groupId }) else {
+        guard let group = allGroups[groupId] else {
             throw NSError(domain: "CircleAlertExit", code: 404, userInfo: [NSLocalizedDescriptionKey: "Group not found."])
         }
 
@@ -290,7 +313,7 @@ final class FirebaseService: ObservableObject {
                 }
             }
 
-            self.persistState()
+            self.persistDatabase()
 
             // Deliver notification to other members of the group
             NotificationService.shared.postGeofenceExitAlert(
@@ -304,7 +327,21 @@ final class FirebaseService: ObservableObject {
         return event
     }
 
-    // MARK: - Helpers
+    // MARK: - State Management & Persistence
+    func refreshUserGroups() {
+        guard let user = currentUser else {
+            userGroups = []
+            return
+        }
+
+        // Return all groups where the current user is a member
+        let filtered = allGroups.values.filter { group in
+            let members = groupMembersMap[group.id] ?? []
+            return members.contains(where: { $0.userId == user.id })
+        }
+        self.userGroups = filtered.sorted(by: { $0.createdAtEpochMs > $1.createdAtEpochMs })
+    }
+
     private func generateInviteCode() -> String {
         let chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
         return String((0..<6).map { _ in chars.randomElement()! })
@@ -323,28 +360,71 @@ final class FirebaseService: ObservableObject {
         }
     }
 
-    private func persistState() {
-        if let encodedGroups = try? JSONEncoder().encode(userGroups) {
-            userDefaults.set(encodedGroups, forKey: "\(storageKeyPrefix)Groups")
+    private func persistDatabase() {
+        if let encodedGroups = try? JSONEncoder().encode(allGroups) {
+            userDefaults.set(encodedGroups, forKey: "\(storageKeyPrefix)AllGroups")
+        }
+        if let encodedMembers = try? JSONEncoder().encode(groupMembersMap) {
+            userDefaults.set(encodedMembers, forKey: "\(storageKeyPrefix)GroupMembers")
+        }
+        if let encodedFences = try? JSONEncoder().encode(activeGeofences) {
+            userDefaults.set(encodedFences, forKey: "\(storageKeyPrefix)ActiveGeofences")
+        }
+        if let encodedEvents = try? JSONEncoder().encode(exitEventsMap) {
+            userDefaults.set(encodedEvents, forKey: "\(storageKeyPrefix)ExitEvents")
+        }
+        if let encodedUsers = try? JSONEncoder().encode(registeredUsers) {
+            userDefaults.set(encodedUsers, forKey: "\(storageKeyPrefix)RegisteredUsers")
         }
     }
 
-    private func seedInitialDemoData(for user: UserModel) {
+    private func loadDatabase() {
+        if let data = userDefaults.data(forKey: "\(storageKeyPrefix)AllGroups"),
+           let groups = try? JSONDecoder().decode([String: TrackingGroupModel].self, from: data) {
+            self.allGroups = groups
+        }
+        if let data = userDefaults.data(forKey: "\(storageKeyPrefix)GroupMembers"),
+           let members = try? JSONDecoder().decode([String: [GroupMemberModel]].self, from: data) {
+            self.groupMembersMap = members
+        }
+        if let data = userDefaults.data(forKey: "\(storageKeyPrefix)ActiveGeofences"),
+           let fences = try? JSONDecoder().decode([String: GeofenceConfigModel].self, from: data) {
+            self.activeGeofences = fences
+        }
+        if let data = userDefaults.data(forKey: "\(storageKeyPrefix)ExitEvents"),
+           let events = try? JSONDecoder().decode([String: [GeofenceExitEventModel]].self, from: data) {
+            self.exitEventsMap = events
+        }
+        if let data = userDefaults.data(forKey: "\(storageKeyPrefix)RegisteredUsers"),
+           let users = try? JSONDecoder().decode([String: UserModel].self, from: data) {
+            self.registeredUsers = users
+        }
+    }
+
+    private func seedInitialDemoData() {
+        let alexUser = UserModel(
+            id: "usr_alex_01",
+            email: "alex@circlealert.internal",
+            displayName: "Alex Rivera",
+            pushToken: "apns_sample_token_88291"
+        )
+        registeredUsers[alexUser.email] = alexUser
+
         let sampleGroupId = "grp_san_francisco_demo"
         let sampleGroup = TrackingGroupModel(
             id: sampleGroupId,
             name: "SF Team Field Operations",
             inviteCode: "CIR778",
-            ownerId: user.id,
+            ownerId: alexUser.id,
             createdAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000) - 86400000,
             geofenceId: "geo_sf_hq",
             memberCount: 3
         )
 
         let member1 = GroupMemberModel(
-            userId: user.id,
-            displayName: user.displayName,
-            email: user.email,
+            userId: alexUser.id,
+            displayName: alexUser.displayName,
+            email: alexUser.email,
             role: .owner,
             joinedAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000) - 86400000,
             geofenceStatus: .inside,
@@ -378,7 +458,7 @@ final class FirebaseService: ObservableObject {
             latitude: 37.7749,
             longitude: -122.4194,
             radiusMeters: 350.0,
-            createdBy: user.id,
+            createdBy: alexUser.id,
             createdAtEpochMs: Int64(Date().timeIntervalSince1970 * 1000) - 86400000,
             isActive: true
         )
@@ -399,9 +479,11 @@ final class FirebaseService: ObservableObject {
             isSimulated: false
         )
 
-        userGroups = [sampleGroup]
+        allGroups[sampleGroupId] = sampleGroup
         groupMembersMap[sampleGroupId] = [member1, member2, member3]
         activeGeofences[sampleGroupId] = sampleGeofence
         exitEventsMap[sampleGroupId] = [sampleEvent]
+
+        persistDatabase()
     }
 }
