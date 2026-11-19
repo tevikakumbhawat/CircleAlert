@@ -2,9 +2,6 @@
 
 CircleAlert is an iOS application designed for group location monitoring, geofenced perimeter protection, and real-time exit alerts. It combines **Kotlin Multiplatform (KMP 2.1.0)** for shared domain logic with native **SwiftUI (iOS 17+)**, **CoreLocation**, **MapKit**, and **Firebase**.
 
-> 📖 **Looking for the technical deep-dive or mentor interview guide?**  
-> See [PROJECT_EXPLANATION.md](file:///Users/tevikakumbhawat/Documents/CircleAlert/PROJECT_EXPLANATION.md) for architecture breakdowns, mathematical formulas, bug solutions, and 25 viva review questions.
-
 ---
 
 ## Key Features
@@ -67,7 +64,6 @@ CircleAlert/
 │       ├── App Models/   # Swift domain data models
 │       └── Location and Services/ # LocationManager, Simulator & FirebaseService
 ├── firebase/             # Backend (firestore.rules, cloud functions)
-└── PROJECT_EXPLANATION.md# In-depth architectural & viva defense guide
 ```
 
 ---
